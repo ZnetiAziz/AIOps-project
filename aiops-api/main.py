@@ -1218,8 +1218,9 @@ async def detecter_anomalies(
                     )
 
                 resultats.append(resultat_metrique)
+                zscore_result = resultat_metrique.get("zscore") or {}
                 historique_anomalies.extend(
-                    resultat_metrique.get("zscore", {}).get("anomalies", [])
+                    zscore_result.get("anomalies", [])
                 )
 
         except Exception as e:
@@ -1231,8 +1232,8 @@ async def detecter_anomalies(
     duree = time.time() - debut_detection
     ttd_gauge.set(duree)
     if any(
-        r.get("zscore", {}).get("nb_anomalies", 0) > 0
-        for r in resultats if "zscore" in r
+        (r.get("zscore") or {}).get("nb_anomalies", 0) > 0
+        for r in resultats
     ):
         mesures_ttd.append(duree)
         enregistrer_mesure("ttd", duree)
@@ -1246,12 +1247,12 @@ async def detecter_anomalies(
         "resultats": resultats,
         "resume": {
             "total_anomalies_zscore": sum(
-                r.get("zscore", {}).get("nb_anomalies", 0)
-                for r in resultats if r.get("zscore")
+                (r.get("zscore") or {}).get("nb_anomalies", 0)
+                for r in resultats
             ),
             "alertes_preventives_prophet": sum(
                 1 for r in resultats
-                if r.get("prophet", {}).get("alerte_preventive", False)
+                if (r.get("prophet") or {}).get("alerte_preventive", False)
             )
         }
     }
