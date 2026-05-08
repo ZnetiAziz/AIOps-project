@@ -1,0 +1,43 @@
+# ================================================
+# DÉPENDANCES AIOPS API
+# ================================================
+
+# Framework API web ultra-rapide
+fastapi==0.111.0
+
+# Serveur ASGI pour FastAPI
+uvicorn[standard]==0.30.1
+
+# Client HTTP asynchrone pour appeler
+# Prometheus, Ollama, Loki, Zabbix
+httpx==0.27.0
+
+# Calcul scientifique — Z-score, statistiques
+numpy==1.26.4
+
+# Manipulation de données temporelles
+pandas==2.2.2
+
+# ── PROPHET ──────────────────────────────────────
+# Modèle de prévision des séries temporelles
+# Développé par Meta (Facebook)
+# Apprend les tendances et cycles des métriques
+prophet==1.1.5
+
+# Nécessaire pour Prophet
+pystan==3.8.0
+cmdstanpy==1.2.2
+
+# ── Machine Learning ──────────────────────────────
+# Algorithmes de clustering et détection anomalies
+scikit-learn==1.5.0
+
+# ── Métriques Prometheus ──────────────────────────
+# Expose les métriques de l'API pour Prometheus
+prometheus-client==0.20.0
+
+# ── Validation données ────────────────────────────
+pydantic==2.7.1
+
+# Multipart form data
+python-multipart==0.0.9

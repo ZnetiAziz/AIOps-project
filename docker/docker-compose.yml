@@ -1,0 +1,337 @@
+# ================================================
+# AIOPS STACK — Mohamed Aziz Zneti
+# Architecture complète d'observabilité avec IA
+# ================================================
+#
+# SERVICES :
+#   1. PostgreSQL      → Base de données Zabbix
+#   2. Zabbix Server   → Monitoring principal
+#   3. Zabbix Agent    → Collecte locale
+#   4. Zabbix Web      → Interface Zabbix
+#   5. Prometheus      → Métriques temps réel
+#   6. Node Exporter   → Métriques système
+#   7. cAdvisor        → Métriques Docker
+#   8. Alertmanager    → Gestion des alertes
+#   9. Loki            → Stockage des logs
+#  10. Promtail        → Collecte des logs
+#  11. Grafana         → Dashboards
+#  12. Ollama          → LLM local (Mistral)
+#  13. AIOps API       → Intelligence artificielle
+#
+# PORTS :
+#   Grafana       → http://localhost:3000
+#   Zabbix        → http://localhost:8080
+#   Prometheus    → http://localhost:9090
+#   Alertmanager  → http://localhost:9093
+#   AIOps API     → http://localhost:8000
+#   Ollama        → http://localhost:11434
+# ================================================
+
+networks:
+  # Réseau interne Docker — tous les services
+  # communiquent entre eux via ce réseau
+  aiops-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  # Volumes persistants — les données survivent
+  # même si les conteneurs sont redémarrés
+  postgres-data:
+  grafana-data:
+  prometheus-data:
+  loki-data:
+  zabbix-snmptraps:
+  ollama-data:
+  aiops-data:
+
+services:
+
+# ────────────────────────────────────────────────
+# 1. POSTGRESQL — Base de données pour Zabbix
+#    Stocke toute la configuration et l'historique
+# ────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: aiops-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zabbix
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: zabbix_secret
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      aiops-network:
+        ipv4_address: 172.20.0.2
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zabbix"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# ────────────────────────────────────────────────
+# 2. ZABBIX SERVER — Cerveau du monitoring
+#    Reçoit les données de tous les agents
+# ────────────────────────────────────────────────
+  zabbix-server:
+    image: zabbix/zabbix-server-pgsql:alpine-6.4-latest
+    container_name: aiops-zabbix-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_SERVER_HOST: postgres
+      POSTGRES_DB: zabbix
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: zabbix_secret
+    ports:
+      - "10051:10051"
+    volumes:
+      - zabbix-snmptraps:/var/lib/zabbix/snmptraps
+      - ./zabbix/alertscripts:/usr/lib/zabbix/alertscripts
+      - ./zabbix/externalscripts:/usr/lib/zabbix/externalscripts
+    networks:
+      aiops-network:
+        ipv4_address: 172.20.0.3
+
+# ────────────────────────────────────────────────
+# 3. ZABBIX AGENT — Monitore le serveur Docker
+#    Collecte les métriques de ta machine WSL
+# ────────────────────────────────────────────────
+  zabbix-agent:
+    image: zabbix/zabbix-agent2:alpine-6.4-latest
+    container_name: aiops-zabbix-agent
+    restart: unless-stopped
+    privileged: true
+    environment:
+      ZBX_HOSTNAME: "docker-host"
+      ZBX_SERVER_HOST: "172.20.0.3"
+      ZBX_SERVER_PORT: "10051"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "10050:10050"
+    networks:
+      aiops-network:
+        ipv4_address: 172.20.0.4
+
+# ────────────────────────────────────────────────
+# 4. ZABBIX WEB — Interface graphique Zabbix
+#    Accessible sur http://localhost:8080
+# ────────────────────────────────────────────────
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-6.4-latest
+    container_name: aiops-zabbix-web
+    restart: unless-stopped
+    depends_on:
+      - zabbix-server
+      - postgres
+    environment:
+      ZBX_SERVER_HOST: zabbix-server
+      DB_SERVER_HOST: postgres
+      POSTGRES_DB: zabbix
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: zabbix_secret
+      PHP_TZ: "Africa/Tunis"
+    ports:
+      - "8080:8080"
+    networks:
+      aiops-network:
+        ipv4_address: 172.20.0.5
+
+# ────────────────────────────────────────────────
+# 5. PROMETHEUS — Collecte métriques temps réel
+#    Base de données spécialisée pour les métriques
+# ────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: aiops-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      aiops-network:
+        ipv4_address: 172.20.0.6
+
+# ────────────────────────────────────────────────
+# 6. NODE EXPORTER — Métriques système Linux
+#    CPU, RAM, Disque, Réseau de ta machine
+# ────────────────────────────────────────────────
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: aiops-node-exporter
+    restart: unless-stopped
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    ports:
+      - "9100:9100"
+    networks:
+      aiops-network:
+        ipv4_address: 172.20.0.7
+
+# ────────────────────────────────────────────────
+# 7. CADVISOR — Métriques conteneurs Docker
+#    Surveille chaque conteneur individuellement
+# ────────────────────────────────────────────────
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.0
+    container_name: aiops-cadvisor
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    ports:
+      - "8081:8080"
+    networks:
+      aiops-network:
+        ipv4_address: 172.20.0.8
+
+# ────────────────────────────────────────────────
+# 8. ALERTMANAGER — Gestion intelligente des alertes
+#    Regroupe et route les alertes vers l'API IA
+# ────────────────────────────────────────────────
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: aiops-alertmanager
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+    networks:
+      aiops-network:
+        ipv4_address: 172.20.0.9
+
+# ────────────────────────────────────────────────
+# 9. LOKI — Stockage des logs
+#    Reçoit tous les logs des VMs et conteneurs
+# ────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:2.9.5
+    container_name: aiops-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      aiops-network:
+        ipv4_address: 172.20.0.10
+
+# ────────────────────────────────────────────────
+# 10. PROMTAIL — Collecte des logs
+#     Envoie les logs système vers Loki
+# ────────────────────────────────────────────────
+  promtail:
+    image: grafana/promtail:2.9.5
+    container_name: aiops-promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - ./promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/log:/var/log:ro
+    networks:
+      aiops-network:
+        ipv4_address: 172.20.0.11
+
+# ────────────────────────────────────────────────
+# 11. GRAFANA — Dashboards et visualisation
+#     Interface principale pour voir tout
+# ────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.1
+    container_name: aiops-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - loki
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    networks:
+      aiops-network:
+        ipv4_address: 172.20.0.12
+
+# ────────────────────────────────────────────────
+# 12. OLLAMA — LLM local (Mistral)
+#     Cerveau IA qui tourne sur ta machine
+#     Aucune donnée n'est envoyée à l'extérieur
+# ────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: aiops-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      aiops-network:
+        ipv4_address: 172.20.0.13
+
+# ────────────────────────────────────────────────
+# 13. AIOPS API — Intelligence artificielle
+#     Fait le lien entre tous les outils
+#     Détecte les anomalies + dialogue avec LLM
+# ────────────────────────────────────────────────
+  aiops-api:
+    build:
+      context: ../aiops-api
+      dockerfile: Dockerfile
+    container_name: aiops-api
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - ollama
+      - loki
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: mistral
+      LOKI_URL: http://loki:3100
+      ALERTMANAGER_URL: http://alertmanager:9093
+      GRAFANA_URL: http://grafana:3000
+      ZABBIX_URL: http://zabbix-web:8080
+      ZABBIX_USER: Admin
+      ZABBIX_PASSWORD: zabbix
+      AIOPS_DB_PATH: /data/aiops.db
+    volumes:
+      - ../aiops-api:/app
+      - aiops-data:/data
+    ports:
+      - "8000:8000"
+    networks:
+      aiops-network:
+        ipv4_address: 172.20.0.14

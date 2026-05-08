@@ -1,0 +1,78 @@
+# ================================================
+# CONFIGURATION LOKI
+# ================================================
+# Loki stocke tous les logs de l'infrastructure
+# Les logs sont ensuite corrélés avec les métriques
+# pour donner à l'IA un contexte complet
+# ================================================
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+# ── Ingester ─────────────────────────────────────
+# Composant qui reçoit et stocke les logs en mémoire
+# avant de les écrire sur disque
+ingester:
+  lifecycler:
+    address: 127.0.0.1
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+    final_sleep: 0s
+  chunk_idle_period: 5m
+  chunk_retain_period: 30s
+  max_transfer_retries: 0
+
+# ── Schema ───────────────────────────────────────
+# Format de stockage des logs sur disque
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: boltdb-shipper
+      object_store: filesystem
+      schema: v11
+      index:
+        prefix: loki_index_
+        period: 24h
+
+# ── Storage ──────────────────────────────────────
+# Où stocker les logs physiquement
+storage_config:
+  boltdb_shipper:
+    active_index_directory: /loki/boltdb-shipper-active
+    cache_location: /loki/boltdb-shipper-cache
+    cache_ttl: 24h
+    shared_store: filesystem
+  filesystem:
+    directory: /loki/chunks
+
+# ── Limits ───────────────────────────────────────
+# Limites pour éviter de saturer le disque
+limits_config:
+  enforce_metric_name: false
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+  ingestion_rate_mb: 16
+  ingestion_burst_size_mb: 32
+
+# ── Compactor ────────────────────────────────────
+# Compresse les anciens logs pour économiser l'espace
+compactor:
+  working_directory: /loki/boltdb-shipper-compactor
+  shared_store: filesystem
+
+# ── Chunk Store ──────────────────────────────────
+chunk_store_config:
+  max_look_back_period: 0s
+
+# ── Table Manager ────────────────────────────────
+# Gère la rétention des logs
+# 0s = garder indéfiniment (à ajuster en production)
+table_manager:
+  retention_deletes_enabled: false
+  retention_period: 0s

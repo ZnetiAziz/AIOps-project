@@ -1,0 +1,88 @@
+# ================================================
+# CONFIGURATION PROMETHEUS
+# ================================================
+# global : paramètres qui s'appliquent à tout
+# scrape_interval : fréquence de collecte des métriques
+# evaluation_interval : fréquence d'évaluation des alertes
+# ================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    projet: 'aiops-zneti'
+    environnement: 'demonstration'
+
+# Lien vers le fichier des règles d'alertes
+rule_files:
+  - "alert.rules.yml"
+
+# Envoyer les alertes vers Alertmanager
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# ================================================
+# SCRAPE CONFIGS — Qui collecter et où
+# ================================================
+scrape_configs:
+
+  # Prometheus se surveille lui-même
+  # Utile pour savoir si Prometheus fonctionne
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Node Exporter — métriques système
+  # CPU, RAM, Disque, Réseau de ta machine WSL
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'wsl-host'
+
+  # cAdvisor — métriques de chaque conteneur Docker
+  # Combien de RAM utilise Zabbix ? Combien de CPU Ollama ?
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # AIOps API — métriques de l'API Python
+  # Nombre d'anomalies détectées, latence LLM, etc.
+  - job_name: 'aiops-api'
+    static_configs:
+      - targets: ['aiops-api:8000']
+    metrics_path: '/metrics'
+
+  # ── VMs VMware ──────────────────────────────
+  # Node Exporter installé sur chaque VM
+  # Permet à Prometheus de collecter les métriques
+  # directement depuis les VMs
+
+  - job_name: 'vm1-webserver'
+    static_configs:
+      - targets: ['192.168.43.102:9100']
+        labels:
+          instance: 'vm1-webserver'
+          role: 'web'
+          os: 'linux'
+
+  - job_name: 'vm2-database'
+    static_configs:
+      - targets: ['192.168.43.7:9100']
+        labels:
+          instance: 'vm2-database'
+          role: 'database'
+          os: 'linux'
+
+  - job_name: 'vm3-appserver'
+    static_configs:
+      - targets: ['192.168.43.188:9100']
+        labels:
+          instance: 'vm3-appserver'
+          role: 'application'
+          os: 'linux'

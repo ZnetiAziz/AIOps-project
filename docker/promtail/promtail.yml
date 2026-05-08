@@ -1,0 +1,82 @@
+# ================================================
+# CONFIGURATION PROMTAIL
+# ================================================
+# Promtail collecte les logs de 3 sources :
+#   1. Logs système Linux (/var/log)
+#   2. Logs des conteneurs Docker
+#   3. Logs des VMs (via fichiers montés)
+# ================================================
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+# Fichier qui mémorise où Promtail en est
+# dans la lecture des fichiers de logs
+positions:
+  filename: /tmp/positions.yaml
+
+# Adresse de Loki où envoyer les logs
+clients:
+  - url: http://aiops-loki:3100/loki/api/v1/push
+    # Délai avant de réessayer si Loki est indisponible
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+
+scrape_configs:
+
+  # ── Source 1 : Logs système Linux ─────────────
+  # Collecte les logs généraux du système
+  # Utile pour détecter les erreurs kernel,
+  # les problèmes de disque, les crashs
+  - job_name: system-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: syslog
+          host: wsl-host
+          environnement: aiops
+          __path__: /var/log/syslog
+
+  # ── Source 2 : Logs d'authentification ─────────
+  # Détecte les tentatives de connexion échouées
+  # Utile pour la sécurité
+  - job_name: auth-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: auth
+          host: wsl-host
+          type: security
+          __path__: /var/log/auth.log
+
+  # ── Source 3 : Logs Docker ─────────────────────
+  # Collecte les logs de TOUS les conteneurs
+  # Docker automatiquement
+  # Chaque conteneur a ses propres labels
+  - job_name: docker-containers
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: docker
+          host: wsl-host
+          __path__: /var/lib/docker/containers/*/*-json.log
+    pipeline_stages:
+      # Extraire les champs du format JSON Docker
+      - json:
+          expressions:
+            output: log
+            stream: stream
+            time: time
+      - labels:
+          stream:
+      - timestamp:
+          source: time
+          format: RFC3339Nano
+      - output:
+          source: output

@@ -1,0 +1,35 @@
+# ================================================
+# CONFIGURATION DATASOURCES GRAFANA
+# ================================================
+# Ces sources de données sont configurées
+# automatiquement au démarrage de Grafana
+# Plus besoin de les configurer manuellement
+# ================================================
+
+apiVersion: 1
+
+datasources:
+
+  # ── Source 1 : Prometheus ─────────────────────
+  # Fournit toutes les métriques numériques
+  # CPU, RAM, Disque, Réseau, etc.
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: "15s"
+      httpMethod: POST
+
+  # ── Source 2 : Loki ───────────────────────────
+  # Fournit tous les logs textuels
+  # Corrélés avec les métriques Prometheus
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: true
+    jsonData:
+      maxLines: 1000

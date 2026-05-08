@@ -1,0 +1,124 @@
+# ================================================
+# RÈGLES D'ALERTES PROMETHEUS
+# ================================================
+# Ces seuils sont CLASSIQUES — sans IA
+# L'IA de notre projet détecte AVANT ces seuils
+# C'est exactement ça qu'on va démontrer
+# en soutenance : IA détecte à 60%, seuil à 85%
+# ================================================
+
+groups:
+
+  # ── Alertes Infrastructure ───────────────────
+  - name: infrastructure
+    rules:
+
+      # CPU trop élevé
+      # Sans IA : alerte à 85%
+      # Avec IA  : détection dès comportement anormal
+      - alert: CPUElevé
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 2m
+        labels:
+          severity: warning
+          type: cpu
+        annotations:
+          summary: "CPU élevé sur {{ $labels.instance }}"
+          description: "CPU à {{ $value | humanize }}% depuis 2 minutes. L'IA aurait détecté cette anomalie bien plus tôt."
+
+      # CPU critique
+      - alert: CPUCritique
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+        for: 1m
+        labels:
+          severity: critical
+          type: cpu
+        annotations:
+          summary: "CPU CRITIQUE sur {{ $labels.instance }}"
+          description: "CPU à {{ $value | humanize }}% — intervention immédiate requise."
+
+      # Mémoire faible
+      - alert: MémoireFaible
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 < 15
+        for: 5m
+        labels:
+          severity: warning
+          type: memory
+        annotations:
+          summary: "Mémoire faible sur {{ $labels.instance }}"
+          description: "Seulement {{ $value | humanize }}% de mémoire disponible."
+
+      # Mémoire critique — cas typique de fuite mémoire
+      - alert: MémoireCritique
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 < 5
+        for: 2m
+        labels:
+          severity: critical
+          type: memory
+        annotations:
+          summary: "MÉMOIRE CRITIQUE sur {{ $labels.instance }}"
+          description: "Fuite mémoire probable — {{ $value | humanize }}% disponible."
+
+      # Disque presque plein
+      - alert: DisquePresquePlein
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 20
+        for: 5m
+        labels:
+          severity: warning
+          type: disk
+        annotations:
+          summary: "Disque presque plein sur {{ $labels.instance }}"
+          description: "{{ $value | humanize }}% d'espace disponible."
+
+      # Disque critique
+      - alert: DisqueCritique
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 5
+        for: 2m
+        labels:
+          severity: critical
+          type: disk
+        annotations:
+          summary: "DISQUE CRITIQUE sur {{ $labels.instance }}"
+          description: "Moins de 5% d'espace disque — risque d'arrêt du système."
+
+  # ── Alertes Disponibilité ─────────────────────
+  - name: disponibilite
+    rules:
+
+      # Service hors ligne
+      - alert: ServiceHorsLigne
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          type: availability
+        annotations:
+          summary: "Service {{ $labels.job }} hors ligne"
+          description: "{{ $labels.instance }} ne répond plus depuis 1 minute."
+
+      # VM hors ligne — très important pour la démo
+      - alert: VMHorsLigne
+        expr: up{job=~"vm.*"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          type: vm
+        annotations:
+          summary: "VM {{ $labels.instance }} hors ligne"
+          description: "La VM {{ $labels.instance }} ne répond plus."
+
+  # ── Alertes Réseau ────────────────────────────
+  - name: reseau
+    rules:
+
+      # Trafic réseau anormal — utile pour détecter
+      # une attaque DDoS ou une fuite de données
+      - alert: TraficRéseauÉlevé
+        expr: rate(node_network_receive_bytes_total{device!="lo"}[5m]) > 100000000
+        for: 5m
+        labels:
+          severity: warning
+          type: network
+        annotations:
+          summary: "Trafic réseau élevé sur {{ $labels.instance }}"
+          description: "Plus de 100 MB/s reçus sur {{ $labels.device }}."

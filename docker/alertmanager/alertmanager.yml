@@ -1,0 +1,76 @@
+# ================================================
+# CONFIGURATION ALERTMANAGER
+# ================================================
+# Rôle : recevoir les alertes de Prometheus,
+# les regrouper intelligemment et les envoyer
+# à l'API AIOps pour analyse par le LLM Mistral
+# ================================================
+
+global:
+  # Délai avant de considérer une alerte résolue
+  resolve_timeout: 5m
+
+# ── Routage des alertes ──────────────────────────
+# Logique : quelle alerte va où
+route:
+  # Regrouper par nom d'alerte ET par instance
+  # Exemple : toutes les alertes CPU de vm1
+  # sont regroupées en 1 seul message
+  group_by: ['alertname', 'instance', 'severity']
+
+  # Attendre 30s avant d'envoyer le premier groupe
+  # Permet de collecter plusieurs alertes ensemble
+  group_wait: 30s
+
+  # Attendre 5min avant d'envoyer un nouveau groupe
+  group_interval: 5m
+
+  # Répéter l'alerte toutes les 3h si non résolue
+  repeat_interval: 3h
+
+  # Destinataire par défaut
+  receiver: 'aiops-webhook'
+
+  # Règles spéciales selon la sévérité
+  routes:
+    # Alertes critiques → envoyées immédiatement
+    - match:
+        severity: critical
+      receiver: 'aiops-webhook'
+      group_wait: 10s
+      repeat_interval: 1h
+
+    # Alertes VM hors ligne → priorité maximale
+    - match:
+        type: vm
+      receiver: 'aiops-webhook'
+      group_wait: 5s
+
+    # Alertes warning → envoi normal
+    - match:
+        severity: warning
+      receiver: 'aiops-webhook'
+      group_wait: 30s
+
+# ── Destinataires ────────────────────────────────
+receivers:
+  - name: 'aiops-webhook'
+    webhook_configs:
+      # Envoie toutes les alertes à ton API Python
+      # L'API les analyse avec Mistral et génère
+      # un diagnostic automatique en français
+      - url: 'http://aiops-api:8000/webhook/alert'
+        send_resolved: true
+        http_config:
+          timeout: 30s
+
+# ── Inhibition ───────────────────────────────────
+# Si une alerte critique existe déjà,
+# ne pas envoyer les alertes warning associées
+# Évite le bruit inutile
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['instance']
