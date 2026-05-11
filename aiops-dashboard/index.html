@@ -885,13 +885,13 @@
   </div>
   <div class="nav-section" style="margin-top:auto">
     <div class="nav-label">Liens rapides</div>
-    <div class="nav-item" onclick="window.open('http://localhost:3001','_blank')">
+    <div class="nav-item" onclick="window.open(`${window.location.protocol}//${window.location.hostname}:3001`,'_blank')">
       <span class="icon">📊</span> Grafana
     </div>
-    <div class="nav-item" onclick="window.open('http://localhost:8080','_blank')">
+    <div class="nav-item" onclick="window.open(`${window.location.protocol}//${window.location.hostname}:8080`,'_blank')">
       <span class="icon">🔵</span> Zabbix
     </div>
-    <div class="nav-item" onclick="window.open('http://localhost:9090','_blank')">
+    <div class="nav-item" onclick="window.open(`${window.location.protocol}//${window.location.hostname}:9090`,'_blank')">
       <span class="icon">🔥</span> Prometheus
     </div>
   </div>
@@ -1267,7 +1267,7 @@
 </div><!-- end main -->
  
 <script>
-const API = 'http://localhost:8000';
+const API = `${window.location.protocol}//${window.location.hostname}:8000`;
 
 function fmtPct(value) {
   return value === null || value === undefined || Number.isNaN(Number(value))

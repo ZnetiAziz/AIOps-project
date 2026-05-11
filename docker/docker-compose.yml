@@ -24,6 +24,7 @@
 #   Prometheus    → http://localhost:9090
 #   Alertmanager  → http://localhost:9093
 #   AIOps API     → http://localhost:8000
+#   Dashboard     → http://localhost:8088
 #   Ollama        → http://localhost:11434
 # ================================================
 
@@ -317,16 +318,16 @@ services:
       - ollama
       - loki
     environment:
-      PROMETHEUS_URL: http://prometheus:9090
-      OLLAMA_URL: http://ollama:11434
-      OLLAMA_MODEL: mistral
-      LOKI_URL: http://loki:3100
-      ALERTMANAGER_URL: http://alertmanager:9093
-      GRAFANA_URL: http://grafana:3000
-      ZABBIX_URL: http://zabbix-web:8080
-      ZABBIX_USER: Admin
-      ZABBIX_PASSWORD: zabbix
-      AIOPS_DB_PATH: /data/aiops.db
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral}
+      LOKI_URL: ${LOKI_URL:-http://loki:3100}
+      ALERTMANAGER_URL: ${ALERTMANAGER_URL:-http://alertmanager:9093}
+      GRAFANA_URL: ${GRAFANA_URL:-http://grafana:3000}
+      ZABBIX_URL: ${ZABBIX_URL:-http://zabbix-web:8080}
+      ZABBIX_USER: ${ZABBIX_USER:-Admin}
+      ZABBIX_PASSWORD: ${ZABBIX_PASSWORD:-zabbix}
+      AIOPS_DB_PATH: ${AIOPS_DB_PATH:-/data/aiops.db}
     volumes:
       - ../aiops-api:/app
       - aiops-data:/data
@@ -335,3 +336,21 @@ services:
     networks:
       aiops-network:
         ipv4_address: 172.20.0.14
+
+# ────────────────────────────────────────────────
+# 14. AIOPS DASHBOARD — Interface appliance
+#     Sert l'interface web depuis le LAN
+# ────────────────────────────────────────────────
+  aiops-dashboard:
+    image: nginx:1.27-alpine
+    container_name: aiops-dashboard
+    restart: unless-stopped
+    depends_on:
+      - aiops-api
+    volumes:
+      - ../aiops-dashboard:/usr/share/nginx/html:ro
+    ports:
+      - "${DASHBOARD_PORT:-8088}:80"
+    networks:
+      aiops-network:
+        ipv4_address: 172.20.0.15

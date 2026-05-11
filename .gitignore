@@ -21,3 +21,5 @@ build/
 
 docker/**/data/
 docker/**/logs/
+
+backups/

@@ -1,0 +1,16 @@
+[Unit]
+Description=AIOps Appliance Docker Stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__PROJECT_DIR__/docker
+ExecStart=/usr/bin/docker compose --env-file __PROJECT_DIR__/.env up -d
+ExecStop=/usr/bin/docker compose --env-file __PROJECT_DIR__/.env down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
