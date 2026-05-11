@@ -2,20 +2,17 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-COMPOSE_DIR="${PROJECT_DIR}/docker"
+. "${SCRIPT_DIR}/lib.sh"
 
-if [ ! -f "${PROJECT_DIR}/.env" ]; then
-  cp "${PROJECT_DIR}/.env.example" "${PROJECT_DIR}/.env"
-  echo "Created ${PROJECT_DIR}/.env from .env.example"
-fi
+ensure_env_file
+check_docker_ready
 
 cd "${COMPOSE_DIR}"
-docker compose --env-file "${PROJECT_DIR}/.env" up -d
+docker compose --env-file "${ENV_FILE}" up -d
 
 echo
 echo "AIOps appliance started."
-echo "Dashboard:    http://$(hostname -I | awk '{print $1}'):$(grep -E '^DASHBOARD_PORT=' "${PROJECT_DIR}/.env" | cut -d= -f2 || echo 8088)"
-echo "API docs:     http://$(hostname -I | awk '{print $1}'):8000/docs"
-echo "Grafana:      http://$(hostname -I | awk '{print $1}'):3001"
-echo "Prometheus:   http://$(hostname -I | awk '{print $1}'):9090"
+echo "Dashboard:    http://$(get_primary_ip):$(grep -E '^DASHBOARD_PORT=' "${ENV_FILE}" | cut -d= -f2 || echo 8088)"
+echo "API docs:     http://$(get_primary_ip):8000/docs"
+echo "Grafana:      http://$(get_primary_ip):3001"
+echo "Prometheus:   http://$(get_primary_ip):9090"

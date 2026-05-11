@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+. "${SCRIPT_DIR}/lib.sh"
 BACKUP_DIR="${PROJECT_DIR}/backups"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 ARCHIVE="${BACKUP_DIR}/aiops-appliance-${STAMP}.tar.gz"

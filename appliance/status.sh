@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+. "${SCRIPT_DIR}/lib.sh"
 
-cd "${PROJECT_DIR}/docker"
-docker compose --env-file "${PROJECT_DIR}/.env" ps
+cd "${COMPOSE_DIR}"
+docker compose --env-file "${ENV_FILE}" ps

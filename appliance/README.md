@@ -44,6 +44,8 @@ http://DEVICE_IP:8088
 ./appliance/install.sh
 ```
 
+The installer checks that Docker is reachable and prints warnings if the machine looks undersized for the full stack.
+
 Useful commands:
 
 ```bash
@@ -68,5 +70,4 @@ sudo systemctl restart aiops-appliance
 
 - Add firewall traffic dashboards from network interfaces.
 - Add nftables rule management.
-- Add installer checks for RAM, disk, and Docker permissions.
 - Add backup/restore for named Docker volumes.
