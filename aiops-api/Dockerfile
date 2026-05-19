@@ -38,12 +38,12 @@ ENV TZ=Africa/Tunis
 # ── Étape 5 : Dépendances système ─────────────
 # Nécessaires pour compiler Prophet et NumPy
 RUN apt-get update && apt-get install -y \
-    # Compilateur C++ pour Prophet/Stan
     build-essential \
-    # Outils de compression
     wget \
     curl \
-    # Nettoyage du cache apt pour réduire la taille
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get purge -y build-essential \
+    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Étape 6 : Mettre à jour pip ───────────────
@@ -74,7 +74,7 @@ EXPOSE 8000
 # uvicorn = serveur ASGI pour FastAPI
 # --host 0.0.0.0 = accessible depuis l'extérieur
 # --port 8000    = port d'écoute
-# --reload       = rechargement auto si code change
+# --log-level    = niveau de log (info en production)
 CMD ["uvicorn", "main:app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \

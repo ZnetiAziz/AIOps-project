@@ -62,10 +62,13 @@ scrape_configs:
   # Node Exporter installé sur chaque VM
   # Permet à Prometheus de collecter les métriques
   # directement depuis les VMs
+  #
+  # NOTE : Ces IPs sont specifiques a l'environnement
+  # de demo. Modifiez-les pour correspondre a vos VMs.
 
   - job_name: 'vm1-webserver'
     static_configs:
-      - targets: ['192.168.43.102:9100']
+      - targets: ['192.168.43.102:9100']  # ← adapter a votre VM
         labels:
           instance: 'vm1-webserver'
           role: 'web'

@@ -18,10 +18,12 @@ import os
 import json
 import time
 import sqlite3
+import shutil
+import subprocess
 import httpx
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -78,9 +80,11 @@ app = FastAPI(
     version="2.0.0"
 )
 
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:8088,http://localhost:3001").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -89,6 +93,7 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup():
     initialiser_db()
+    charger_etat_en_memoire()
 
 # ════════════════════════════════════════════════
 # MÉTRIQUES PROMETHEUS DE L'API
@@ -122,7 +127,11 @@ ttd_gauge = Gauge(
 )
 ttr_gauge = Gauge(
     "aiops_ttr_secondes",
-    "Time To Resolve mesuré en secondes"
+    "Time To Resolve (diagnostic LLM) en secondes"
+)
+ttr_remediation_gauge = Gauge(
+    "aiops_ttr_remediation_secondes",
+    "Time To Resolve (remediation/firewall) en secondes"
 )
 prophet_predictions = Counter(
     "aiops_prophet_predictions_total",
@@ -139,6 +148,8 @@ alertes_preventives = Counter(
 # Pour la démo : mémoire suffisante
 # ════════════════════════════════════════════════
 
+MAX_ITEMS_MEMORY = 200
+
 historique_alertes    = []
 historique_anomalies  = []
 historique_predictions = []
@@ -146,10 +157,21 @@ mesures_ttd           = []
 mesures_ttr           = []
 
 
+def cap_list(lst: list, limit: int = MAX_ITEMS_MEMORY):
+    """Garde uniquement les `limit` derniers elements."""
+    while len(lst) > limit:
+        lst.pop(0)
+
+
 def connexion_db():
     conn = sqlite3.connect(AIOPS_DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def now_utc() -> datetime:
+    """Retourne l'heure UTC actuelle — remplace datetime.utcnow() deprece."""
+    return datetime.now(timezone.utc)
 
 
 def initialiser_db():
@@ -195,7 +217,38 @@ def initialiser_db():
             type TEXT NOT NULL,
             value_sec REAL NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS remediation_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            anomaly_id TEXT NOT NULL,
+            instance TEXT NOT NULL,
+            type TEXT NOT NULL,
+            action TEXT NOT NULL,
+            status TEXT NOT NULL,
+            blocked INTEGER NOT NULL,
+            duration_sec REAL NOT NULL,
+            details_json TEXT NOT NULL
+        );
         """)
+
+
+def charger_etat_en_memoire():
+    """Recharge l'etat en memoire depuis SQLite au demarrage pour eviter
+    l'incoherence entre memoire vide et donnees persistees."""
+    with connexion_db() as conn:
+        for row in conn.execute(
+            "SELECT * FROM alert_history ORDER BY id DESC LIMIT ?",
+            (MAX_ITEMS_MEMORY,)
+        ).fetchall():
+            item = dict(row)
+            item["metriques"] = json.loads(item.pop("metriques_json"))
+            item.pop("id", None)
+            historique_alertes.append(item)
+        historique_alertes.reverse()
+
+        mesures_ttd.extend(charger_mesures("ttd", MAX_ITEMS_MEMORY))
+        mesures_ttr.extend(charger_mesures("ttr", MAX_ITEMS_MEMORY))
 
 
 def compter_table(table: str) -> int:
@@ -234,7 +287,7 @@ def enregistrer_mesure(type_mesure: str, valeur: float):
             INSERT INTO performance_measurements(timestamp, type, value_sec)
             VALUES (?, ?, ?)
             """,
-            (datetime.utcnow().isoformat(), type_mesure, float(valeur))
+            (now_utc().isoformat(), type_mesure, float(valeur))
         )
 
 
@@ -295,7 +348,7 @@ def enregistrer_anomalies(instance: str, metrique: str, methode: str, anomalies:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    anomalie.get("timestamp", datetime.utcnow().isoformat()),
+                    now_utc().isoformat(),
                     instance,
                     metrique,
                     methode,
@@ -322,6 +375,51 @@ def enregistrer_prediction(entree: dict):
                 json.dumps(entree["resultat"], ensure_ascii=False)
             )
         )
+
+
+def enregistrer_remediation(entree: dict):
+    with connexion_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO remediation_history(
+                timestamp, anomaly_id, instance, type, action, status,
+                blocked, duration_sec, details_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entree["timestamp"],
+                entree["anomaly_id"],
+                entree["instance"],
+                entree["type"],
+                entree["action"],
+                entree["status"],
+                1 if entree["blocked"] else 0,
+                float(entree["duration_sec"]),
+                json.dumps(entree["details"], ensure_ascii=False)
+            )
+        )
+
+
+def lister_remediations(limite: int = 20) -> list:
+    with connexion_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM remediation_history
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limite,)
+        ).fetchall()
+    remediations = []
+    for row in reversed(rows):
+        item = dict(row)
+        item["blocked"] = bool(item["blocked"])
+        item["details"] = json.loads(item.pop("details_json"))
+        item.pop("id", None)
+        remediations.append(item)
+    return remediations
 
 
 def construire_timeline(limite: int = 50) -> list:
@@ -417,6 +515,14 @@ class RequetePrediction(BaseModel):
     heures_historique: int = 24
     heures_prediction: int = 4
 
+class RequeteRemediation(BaseModel):
+    anomaly_id: str
+    type: str
+    instance: str = "wsl-host"
+    description: Optional[str] = None
+    source_ip: Optional[str] = None
+    action: str = "auto_block"
+
 # ════════════════════════════════════════════════
 # UTILITAIRES — FONCTIONS DE BASE
 # ════════════════════════════════════════════════
@@ -509,7 +615,7 @@ async def interroger_loki(
     - Log      : "OutOfMemoryError in thread main"
     - Diagnostic IA : "Fuite mémoire Java détectée"
     """
-    maintenant = datetime.utcnow()
+    maintenant = now_utc()
     debut = maintenant - timedelta(hours=heures)
 
     async with httpx.AsyncClient(timeout=30) as client:
@@ -632,6 +738,69 @@ def detecter_zscore(
         for i in indices
     ]
 
+
+def decrire_anomalie(
+    metrique: str,
+    methode: str,
+    anomalie: dict,
+    instance: str = "wsl-host"
+) -> dict:
+    """Ajoute les champs lisibles par le dashboard à une anomalie détectée."""
+    type_map = {
+        "CPU": "cpu",
+        "Mémoire": "memory",
+        "Disque": "disk"
+    }
+    metrique_type = type_map.get(metrique, metrique.lower())
+    severite = anomalie.get("severite", "warning")
+
+    valeur = anomalie.get("valeur", anomalie.get("valeur_reelle"))
+    attendue = anomalie.get("valeur_attendue", anomalie.get("valeur_predite"))
+    score = anomalie.get("z_score", anomalie.get("ecart_pct"))
+    timestamp = anomalie.get("timestamp", now_utc().isoformat())
+    anomaly_id = f"{instance}:{metrique_type}:{methode}:{timestamp}"
+
+    if metrique_type == "cpu":
+        description = (
+            "Utilisation CPU anormale par rapport au comportement historique. "
+            "Cela peut indiquer une surcharge, un processus bloqué ou une attaque."
+        )
+    elif metrique_type == "memory":
+        description = (
+            "Consommation mémoire anormale par rapport au comportement historique. "
+            "Cela peut indiquer une fuite mémoire ou une charge applicative élevée."
+        )
+    elif metrique_type == "disk":
+        description = (
+            "Utilisation disque anormale par rapport au comportement historique. "
+            "Cela peut indiquer une saturation, des logs volumineux ou une croissance inattendue."
+        )
+    else:
+        description = (
+            f"Comportement anormal détecté sur {metrique} par la méthode {methode}."
+        )
+
+    anomalie["anomaly_id"] = anomaly_id
+    anomalie["type"] = metrique_type
+    anomalie["type_label"] = metrique
+    anomalie["description"] = description
+    anomalie["etat"] = {
+        "bloquee": False,
+        "statut": "non_bloquee",
+        "label": "Non bloquée",
+        "raison": (
+            "Détection uniquement. Lancez la remédiation pour mesurer le TTR de blocage."
+        )
+    }
+    anomalie["resume"] = {
+        "methode": methode,
+        "severite": severite,
+        "valeur": valeur,
+        "valeur_attendue": attendue,
+        "score": score
+    }
+    return anomalie
+
 # ════════════════════════════════════════════════
 # PRÉVISION — PROPHET
 # Modèle de Meta pour séries temporelles
@@ -673,7 +842,7 @@ def analyser_avec_prophet(
     try:
         # Préparer les données au format Prophet
         df = pd.DataFrame({
-            "ds": [datetime.utcfromtimestamp(t) for t in timestamps],
+            "ds": [datetime.fromtimestamp(t, tz=timezone.utc) for t in timestamps],
             "y": valeurs
         }).dropna()
         df = df[df["y"] >= 0]
@@ -859,7 +1028,7 @@ async def sante():
 
     return {
         "statut": statut,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "modele_llm": OLLAMA_MODEL,
         "prophet": "disponible" if PROPHET_DISPONIBLE else "indisponible",
         "services": services,
@@ -887,7 +1056,7 @@ async def dashboard_live(instance: str = "wsl-host"):
     health = await sante()
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "instance": instance,
         "services": health["services"],
         "statut": health["statut"],
@@ -957,7 +1126,7 @@ async def statut_vms():
     vms.sort(key=lambda vm: vm["name"])
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "total": len(vms),
         "online": sum(1 for vm in vms if vm["status"] == "online"),
         "warning": sum(1 for vm in vms if vm["status"] == "warning"),
@@ -1075,7 +1244,7 @@ Réponds en français avec ce format exact :
         enregistrer_mesure("ttr", duree)
 
         entree_alerte = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": now_utc().isoformat(),
             "alerte": nom,
             "instance": instance,
             "severite": severite,
@@ -1091,9 +1260,8 @@ Réponds en français avec ce format exact :
         historique_alertes.append(entree_alerte)
         enregistrer_alerte(entree_alerte)
 
-    # Garder max 100 entrées
-    while len(historique_alertes) > 100:
-        historique_alertes.pop(0)
+    cap_list(historique_alertes)
+    cap_list(mesures_ttr)
 
 
 @app.get("/anomalies", tags=["Détection IA"])
@@ -1117,7 +1285,7 @@ async def detecter_anomalies(
     - seuil    : sensibilité Z-score (défaut: 2.5)
     - methode  : zscore / prophet / both
     """
-    fin = datetime.utcnow()
+    fin = now_utc()
     debut_periode = fin - timedelta(hours=heures)
     debut_detection = time.time()
 
@@ -1180,9 +1348,10 @@ async def detecter_anomalies(
                 if methode in ["zscore", "both"]:
                     anomalies_z = detecter_zscore(valeurs, seuil)
                     for a in anomalies_z:
-                        a["timestamp"] = datetime.utcfromtimestamp(
-                            timestamps[a["index"]]
+                        a["timestamp"] = datetime.fromtimestamp(
+                            timestamps[a["index"]], tz=timezone.utc
                         ).isoformat()
+                        decrire_anomalie(m["nom"], "zscore", a, instance)
                         anomalies_detectees.labels(
                             instance=instance,
                             methode="zscore"
@@ -1204,6 +1373,7 @@ async def detecter_anomalies(
                         timestamps, valeurs, m["nom"]
                     )
                     for a in resultat_prophet.get("anomalies_detectees", []):
+                        decrire_anomalie(m["nom"], "prophet", a, instance)
                         anomalies_detectees.labels(
                             instance=instance,
                             methode="prophet"
@@ -1222,6 +1392,7 @@ async def detecter_anomalies(
                 historique_anomalies.extend(
                     zscore_result.get("anomalies", [])
                 )
+                cap_list(historique_anomalies)
 
         except Exception as e:
             resultats.append({
@@ -1231,19 +1402,17 @@ async def detecter_anomalies(
 
     duree = time.time() - debut_detection
     ttd_gauge.set(duree)
-    if any(
-        (r.get("zscore") or {}).get("nb_anomalies", 0) > 0
-        for r in resultats
-    ):
-        mesures_ttd.append(duree)
-        enregistrer_mesure("ttd", duree)
+    mesures_ttd.append(duree)
+    enregistrer_mesure("ttd", duree)
+    cap_list(mesures_ttd)
+    cap_list(historique_alertes)
 
     return {
         "instance": instance,
         "periode_heures": heures,
         "methode": methode,
         "duree_detection_sec": round(duree, 3),
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "resultats": resultats,
         "resume": {
             "total_anomalies_zscore": sum(
@@ -1290,7 +1459,7 @@ async def predire(requete: RequetePrediction):
         requete.metrique
     )
 
-    fin = datetime.utcnow()
+    fin = now_utc()
     debut = fin - timedelta(hours=requete.heures_historique)
 
     try:
@@ -1321,13 +1490,14 @@ async def predire(requete: RequetePrediction):
         )
 
         entree_prediction = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": now_utc().isoformat(),
             "instance": requete.instance,
             "metrique": requete.metrique,
             "resultat": resultat
         }
         historique_predictions.append(entree_prediction)
         enregistrer_prediction(entree_prediction)
+        cap_list(historique_predictions)
 
         # Si alerte préventive → diagnostic LLM automatique
         if resultat.get("alerte_preventive"):
@@ -1349,7 +1519,7 @@ Génère une alerte préventive en français avec :
             "metrique": requete.metrique,
             "historique_heures": requete.heures_historique,
             "prediction_heures": requete.heures_prediction,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": now_utc().isoformat(),
             "analyse_prophet": resultat
         }
 
@@ -1423,7 +1593,7 @@ Réponds de façon claire, structurée et utile."""
         "contexte": contexte,
         "duree_sec": round(duree, 2),
         "modele": OLLAMA_MODEL,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": now_utc().isoformat()
     }
 
 
@@ -1441,11 +1611,96 @@ async def historique_alertes_endpoint(limite: int = 20):
     }
 
 
+@app.post("/remediate/anomaly", tags=["Remédiation"])
+async def remedier_anomalie(requete: RequeteRemediation):
+    """
+    Lance une remédiation et mesure le TTR de blocage.
+
+    Sur l'environnement de développement, la remédiation est simulée si le
+    firewall hôte n'est pas activé ou si aucune IP source n'est disponible.
+    Sur appliance serveur, une IP source peut être bloquée via nftables.
+    """
+    debut = time.time()
+    firewall_enabled = os.getenv("FIREWALL_ENABLE", "0") == "1"
+    nft_path = shutil.which("nft")
+    blocked = False
+    status = "bloquee_simulee"
+    details = {
+        "mode": "simulation",
+        "message": (
+            "Remédiation simulée : l'anomalie est marquée contenue pour mesurer "
+            "le TTR, mais aucune règle firewall hôte n'a été appliquée."
+        )
+    }
+
+    if requete.source_ip and firewall_enabled and nft_path:
+        try:
+            subprocess.run(
+                [
+                    nft_path,
+                    "add", "rule", "inet", "aiops_filter", "input",
+                    "ip", "saddr", requete.source_ip, "drop"
+                ],
+                check=True,
+                timeout=5,
+                capture_output=True,
+                text=True
+            )
+            blocked = True
+            status = "bloquee_firewall"
+            details = {
+                "mode": "firewall",
+                "source_ip": requete.source_ip,
+                "message": f"IP {requete.source_ip} bloquée via nftables."
+            }
+        except Exception as e:
+            status = "echec_firewall"
+            details = {
+                "mode": "firewall",
+                "source_ip": requete.source_ip,
+                "message": f"Échec du blocage nftables : {str(e)}"
+            }
+    elif requete.source_ip and not firewall_enabled:
+        details["source_ip"] = requete.source_ip
+        details["message"] = (
+            f"Blocage simulé de {requete.source_ip}. FIREWALL_ENABLE=0, "
+            "aucune règle nftables n'a été appliquée."
+        )
+
+    duree = time.time() - debut
+    ttr_remediation_gauge.set(duree)
+    enregistrer_mesure("ttr_remediation", duree)
+
+    entree = {
+        "timestamp": now_utc().isoformat(),
+        "anomaly_id": requete.anomaly_id,
+        "instance": requete.instance,
+        "type": requete.type,
+        "action": requete.action,
+        "status": status,
+        "blocked": blocked,
+        "duration_sec": round(duree, 3),
+        "details": details
+    }
+    enregistrer_remediation(entree)
+
+    return entree
+
+
+@app.get("/remediations/history", tags=["Remédiation"])
+async def historique_remediations(limite: int = 20):
+    return {
+        "total": compter_table("remediation_history"),
+        "ttr_remediation_moyen_sec": round(moyenne_mesure("ttr_remediation"), 3),
+        "remediations": lister_remediations(limite)
+    }
+
+
 @app.get("/incidents/timeline", tags=["Alertes"])
 async def incidents_timeline(limite: int = 50):
     """Timeline unifiée des alertes, anomalies et prédictions persistées."""
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "total": min(
             compter_table("alert_history")
             + compter_table("anomaly_history")
@@ -1481,15 +1736,21 @@ async def performance():
             "mesures": charger_mesures("ttd")
         },
         "ttr": {
-            "description": "Time To Resolve — diagnostic LLM",
+            "description": "Time To Resolve — remédiation/blocage ou diagnostic IA",
             "sans_ia_heures": "1 à 3 heures",
-            "avec_ia_secondes": round(moyenne_mesure("ttr"), 2),
+            "avec_ia_secondes": round(
+                moyenne_mesure("ttr_remediation") or moyenne_mesure("ttr"),
+                3
+            ),
             "amelioration": "-90%",
-            "mesures": charger_mesures("ttr")
+            "mesures": charger_mesures("ttr_remediation") or charger_mesures("ttr"),
+            "diagnostic_llm_moyen_sec": round(moyenne_mesure("ttr"), 2),
+            "remediation_moyen_sec": round(moyenne_mesure("ttr_remediation"), 3)
         },
         "resume": {
             "alertes_traitees": compter_table("alert_history"),
             "anomalies_detectees": compter_table("anomaly_history"),
+            "remediations": compter_table("remediation_history"),
             "predictions_prophet": compter_table("prediction_history"),
             "modele_llm": OLLAMA_MODEL,
             "prophet": PROPHET_DISPONIBLE
@@ -1502,7 +1763,7 @@ async def analyser_metrique(metric_name: str, heures: int = 24):
     """
     Analyse complète d'une métrique avec statistiques et LLM.
     """
-    fin = datetime.utcnow()
+    fin = now_utc()
     debut = fin - timedelta(hours=heures)
 
     try:
@@ -1549,7 +1810,7 @@ Donne en français :
             "periode_heures": heures,
             "statistiques": stats,
             "analyse_llm": analyse,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_utc().isoformat()
         }
 
     except Exception as e:

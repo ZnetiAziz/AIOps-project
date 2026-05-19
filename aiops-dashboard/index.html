@@ -577,6 +577,38 @@
   }
  
   .anomaly-desc { font-size: 11px; color: var(--text3); }
+
+  .anomaly-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  .anomaly-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 20px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg3);
+    color: var(--text2);
+    font-size: 10px;
+    line-height: 1.3;
+  }
+
+  .anomaly-chip.blocked {
+    color: var(--green);
+    border-color: rgba(0,229,160,0.35);
+    background: rgba(0,229,160,0.08);
+  }
+
+  .anomaly-chip.not-blocked {
+    color: var(--yellow);
+    border-color: rgba(245,158,11,0.35);
+    background: rgba(245,158,11,0.08);
+  }
  
   .anomaly-time {
     font-size: 10px;
@@ -880,7 +912,7 @@
       <span class="icon">◎</span> Assistant IA
     </div>
     <div class="nav-item" onclick="showSection('performance', this)">
-      <span class="icon">◈</span> TTD / TTR
+      <span class="icon">◈</span> Performance AIOps
     </div>
   </div>
   <div class="nav-section" style="margin-top:auto">
@@ -1243,9 +1275,9 @@
         <div class="stat-sub">Sans IA : 1-3 heures</div>
       </div>
       <div class="stat-card orange">
-        <div class="stat-label">Alertes traitées</div>
+        <div class="stat-label">Remédiations</div>
         <div class="stat-value" id="perf-alerts">--</div>
-        <div class="stat-sub">Par Mistral</div>
+        <div class="stat-sub">Blocage ou simulation</div>
       </div>
       <div class="stat-card red">
         <div class="stat-label">Prédictions</div>
@@ -1268,6 +1300,7 @@
  
 <script>
 const API = `${window.location.protocol}//${window.location.hostname}:8000`;
+const anomalyCache = {};
 
 function fmtPct(value) {
   return value === null || value === undefined || Number.isNaN(Number(value))
@@ -1288,6 +1321,62 @@ function escapeHTML(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
+}
+
+function anomalyTypeLabel(anomaly, metric) {
+  return anomaly?.type_label || metric || anomaly?.type || 'Anomalie';
+}
+
+function anomalyDescription(anomaly) {
+  return anomaly?.description || 'Comportement anormal détecté par l’analyse AIOps.';
+}
+
+function anomalyBlockState(anomaly) {
+  const state = anomaly?.etat || {};
+  return {
+    label: state.label || (state.bloquee ? 'Bloquée' : 'Non bloquée'),
+    className: state.bloquee ? 'blocked' : 'not-blocked',
+    reason: state.raison || ''
+  };
+}
+
+async function remediateAnomaly(anomaly, metric, button) {
+  if (!anomaly?.anomaly_id) {
+    if (button) button.textContent = 'Anomalie sans ID';
+    return;
+  }
+  const original = button?.textContent || 'Remédier';
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Remédiation...';
+  }
+
+  const result = await apiPost('/remediate/anomaly', {
+    anomaly_id: anomaly.anomaly_id,
+    type: anomaly.type || metric || 'unknown',
+    instance: document.getElementById('anom-instance')?.value || 'wsl-host',
+    description: anomaly.description || '',
+    action: 'auto_block'
+  });
+
+  if (button) {
+    button.disabled = false;
+    if (result) {
+      button.textContent = `${result.status} — TTR ${result.duration_sec}s`;
+      button.classList.remove('btn-ghost');
+      button.classList.add('btn-primary');
+    } else {
+      button.textContent = 'Erreur API';
+      setTimeout(() => { button.textContent = original; }, 2500);
+    }
+  }
+  loadPerformance();
+}
+
+function remediateAnomalyFromCache(anomalyId, button) {
+  const cached = anomalyCache[anomalyId];
+  if (!cached) return;
+  remediateAnomaly(cached.anomaly, cached.metric, button);
 }
  
 // ── CLOCK ──
@@ -1372,8 +1461,7 @@ async function loadDashboard() {
     document.getElementById('global-status-dot').style.background = 'var(--red)';
     document.getElementById('global-status-dot').style.boxShadow = '0 0 8px var(--red)';
   }
- 
-  renderAnomalyMiniList();
+
   renderVMs();
 }
  
@@ -1421,12 +1509,18 @@ async function renderAnomalyMiniList() {
     const anoms = r.zscore?.anomalies || [];
     for (const a of anoms.slice(0,2)) {
       const sev = a.severite || 'warning';
+      const blockState = anomalyBlockState(a);
       html += `
         <div class="anomaly-item ${sev}">
           <div class="anomaly-icon ${sev}">${sev==='critical'?'⚠':'◈'}</div>
           <div class="anomaly-content">
-            <div class="anomaly-title">${r.metrique} — Valeur: ${a.valeur}${r.unite||''}</div>
-            <div class="anomaly-desc">Attendu: ${a.valeur_attendue}${r.unite||''} — Z-score: ${a.z_score}</div>
+            <div class="anomaly-title">${escapeHTML(anomalyTypeLabel(a, r.metrique))} — ${escapeHTML(sev.toUpperCase())}</div>
+            <div class="anomaly-desc">${escapeHTML(anomalyDescription(a))}</div>
+            <div class="anomaly-desc">Valeur: ${escapeHTML(a.valeur)}${escapeHTML(r.unite||'')} — Attendu: ${escapeHTML(a.valeur_attendue)}${escapeHTML(r.unite||'')} — Z-score: ${escapeHTML(a.z_score)}</div>
+            <div class="anomaly-meta">
+              <span class="anomaly-chip">Type: ${escapeHTML(a.type || r.metrique)}</span>
+              <span class="anomaly-chip ${blockState.className}">État: ${escapeHTML(blockState.label)}</span>
+            </div>
           </div>
           <div class="anomaly-time">${a.timestamp?.slice(11,16)||''}</div>
         </div>`;
@@ -1549,14 +1643,32 @@ async function runAnomalyDetection() {
  
     if (r.zscore) {
       html += `<div style="font-size:11px;color:var(--text3);margin-bottom:6px">Z-score: ${r.zscore.nb_anomalies} anomalie(s)</div>`;
-      for (const a of r.zscore.anomalies || []) {
+      for (const [idx, a] of (r.zscore.anomalies || []).entries()) {
+        if (!a.anomaly_id) {
+          a.anomaly_id = `${instance}:${r.metrique}:zscore:${a.timestamp || idx}`;
+        }
+        if (!a.type) {
+          a.type = String(r.metrique || 'unknown').toLowerCase();
+        }
+        if (!a.description) {
+          a.description = anomalyDescription(a);
+        }
         const sev = a.severite;
+        const blockState = anomalyBlockState(a);
+        anomalyCache[a.anomaly_id] = { anomaly: a, metric: r.metrique };
         html += `
           <div class="anomaly-item ${sev}" style="margin-bottom:6px">
             <div class="anomaly-icon ${sev}">${sev==='critical'?'🔴':'🟡'}</div>
             <div class="anomaly-content">
-              <div class="anomaly-title">Anomalie ${sev.toUpperCase()} — ${a.timestamp?.slice(0,19)||''}</div>
-              <div class="anomaly-desc">Valeur: <b>${a.valeur}${r.unite}</b> | Attendu: ${a.valeur_attendue}${r.unite} | Z-score: <b>${a.z_score}</b></div>
+              <div class="anomaly-title">${escapeHTML(anomalyTypeLabel(a, r.metrique))} — ${escapeHTML(sev.toUpperCase())} — ${a.timestamp?.slice(0,19)||''}</div>
+              <div class="anomaly-desc">${escapeHTML(anomalyDescription(a))}</div>
+              <div class="anomaly-desc">Valeur: <b>${escapeHTML(a.valeur)}${escapeHTML(r.unite)}</b> | Attendu: ${escapeHTML(a.valeur_attendue)}${escapeHTML(r.unite)} | Z-score: <b>${escapeHTML(a.z_score)}</b></div>
+              <div class="anomaly-meta">
+                <span class="anomaly-chip">Type: ${escapeHTML(a.type || r.metrique)}</span>
+                <span class="anomaly-chip ${blockState.className}">État: ${escapeHTML(blockState.label)}</span>
+                ${blockState.reason ? `<span class="anomaly-chip">${escapeHTML(blockState.reason)}</span>` : ''}
+              </div>
+              <button class="btn btn-ghost" style="margin-top:8px;padding:6px 10px;font-size:10px" onclick="remediateAnomalyFromCache('${escapeHTML(a.anomaly_id)}', this)">Remédier / mesurer TTR</button>
             </div>
           </div>`;
       }
@@ -1695,7 +1807,9 @@ function addMessage(role, content, id) {
   const div = document.createElement('div');
   div.className = `message ${role}`;
   if (id) div.id = 'msg-' + id;
-  const safeContent = id === 'thinking' ? content : escapeHTML(content).replaceAll('\n', '<br>');
+  const safeContent = id === 'thinking'
+    ? '<span class="loading"><span class="spinner"></span> Mistral analyse...</span>'
+    : escapeHTML(content).replaceAll('\n', '<br>');
   div.innerHTML = `
     <div class="msg-avatar ${role==='ai'?'ai':'user-av'}">${role==='ai'?'⬡':'⊙'}</div>
     <div>
@@ -1764,7 +1878,7 @@ async function loadPerformance() {
   if (!data) return;
   document.getElementById('perf-ttd').textContent = (data.ttd?.avec_ia_secondes||0) + 's';
   document.getElementById('perf-ttr').textContent = (data.ttr?.avec_ia_secondes||0) + 's';
-  document.getElementById('perf-alerts').textContent = data.resume?.alertes_traitees||0;
+  document.getElementById('perf-alerts').textContent = data.resume?.remediations || data.resume?.alertes_traitees || 0;
   document.getElementById('perf-preds').textContent = data.resume?.predictions_prophet||0;
  
   document.getElementById('performance-detail').innerHTML = `
@@ -1777,6 +1891,9 @@ async function loadPerformance() {
         <div style="font-size:12px;font-weight:600;color:var(--green);margin-bottom:12px">🔧 Time To Resolve (TTR)</div>
         <div class="result-box">${JSON.stringify(data.ttr, null, 2)}</div>
       </div>
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin-top:12px">
+      Remédiations enregistrées : ${escapeHTML(data.resume?.remediations || 0)}
     </div>`;
 }
  
