@@ -56,6 +56,56 @@ sudo systemctl restart aiops-appliance
 ./appliance/backup.sh
 ```
 
+## Firewall Appliance Mode
+
+The firewall mode configures the host as a small LAN/WAN gateway with `nftables`.
+It is intentionally disabled by default so the appliance does not lock you out
+before the correct network interfaces are confirmed.
+
+First identify interfaces:
+
+```bash
+ip addr
+ip route
+```
+
+Then edit `.env`:
+
+```env
+FIREWALL_ENABLE=1
+FIREWALL_WAN_IFACE=eth0
+FIREWALL_LAN_IFACE=eth1
+FIREWALL_LAN_CIDR=192.168.10.0/24
+FIREWALL_LAN_TCP_PORTS=22,8088,8000,3001,8080,9090,9093
+```
+
+Apply the firewall:
+
+```bash
+sudo ./appliance/firewall.sh apply
+```
+
+Check status:
+
+```bash
+./appliance/firewall.sh status
+```
+
+Remove only the AIOps firewall tables:
+
+```bash
+sudo ./appliance/firewall.sh stop
+```
+
+The applied policy:
+
+- allows established traffic;
+- allows the LAN CIDR to access selected appliance TCP ports;
+- allows LAN to WAN forwarding;
+- enables IPv4 forwarding;
+- applies NAT masquerading from LAN to WAN;
+- drops unsolicited inbound WAN traffic.
+
 ## Ports
 
 - Dashboard: `8088`
@@ -69,5 +119,5 @@ sudo systemctl restart aiops-appliance
 ## Next Appliance Work
 
 - Add firewall traffic dashboards from network interfaces.
-- Add nftables rule management.
+- Add API-backed nftables rule management.
 - Add backup/restore for named Docker volumes.

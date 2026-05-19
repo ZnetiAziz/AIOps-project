@@ -114,7 +114,7 @@ groups:
       # Trafic réseau anormal — utile pour détecter
       # une attaque DDoS ou une fuite de données
       - alert: TraficRéseauÉlevé
-        expr: rate(node_network_receive_bytes_total{device!="lo"}[5m]) > 100000000
+        expr: rate(node_network_receive_bytes_total{device!~"lo|docker.*|br.*|veth.*"}[5m]) > 100000000
         for: 5m
         labels:
           severity: warning
@@ -122,3 +122,36 @@ groups:
         annotations:
           summary: "Trafic réseau élevé sur {{ $labels.instance }}"
           description: "Plus de 100 MB/s reçus sur {{ $labels.device }}."
+
+      # Interface réseau sans lien — critique pour un appliance firewall
+      - alert: InterfaceRéseauDown
+        expr: node_network_carrier{device!~"lo|docker.*|br.*|veth.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          type: firewall
+        annotations:
+          summary: "Interface réseau down sur {{ $labels.instance }}"
+          description: "L'interface {{ $labels.device }} n'a plus de lien physique."
+
+      # Trop d'erreurs réseau — câble, driver, duplex ou carte instable
+      - alert: ErreursRéseauÉlevées
+        expr: rate(node_network_receive_errs_total{device!~"lo|docker.*|br.*|veth.*"}[5m]) + rate(node_network_transmit_errs_total{device!~"lo|docker.*|br.*|veth.*"}[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          type: firewall
+        annotations:
+          summary: "Erreurs réseau élevées sur {{ $labels.instance }}"
+          description: "L'interface {{ $labels.device }} génère plus de 10 erreurs/s."
+
+      # Drops réseau — utile pour détecter saturation ou filtrage anormal
+      - alert: DropsRéseauÉlevés
+        expr: rate(node_network_receive_drop_total{device!~"lo|docker.*|br.*|veth.*"}[5m]) + rate(node_network_transmit_drop_total{device!~"lo|docker.*|br.*|veth.*"}[5m]) > 50
+        for: 5m
+        labels:
+          severity: warning
+          type: firewall
+        annotations:
+          summary: "Drops réseau élevés sur {{ $labels.instance }}"
+          description: "L'interface {{ $labels.device }} droppe plus de 50 paquets/s."
