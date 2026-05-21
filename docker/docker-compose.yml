@@ -308,12 +308,15 @@ services:
 #     Fait le lien entre tous les outils
 #     Détecte les anomalies + dialogue avec LLM
 # ────────────────────────────────────────────────
-  aiops-api:
+   aiops-api:
     build:
       context: ../aiops-api
       dockerfile: Dockerfile
     container_name: aiops-api
     restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     depends_on:
       - prometheus
       - ollama
@@ -328,6 +331,7 @@ services:
       ZABBIX_URL: ${ZABBIX_URL:-http://zabbix-web:8080}
       ZABBIX_USER: ${ZABBIX_USER:-Admin}
       ZABBIX_PASSWORD: ${ZABBIX_PASSWORD:-zabbix}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8088,http://localhost:3001}
       AIOPS_DB_PATH: ${AIOPS_DB_PATH:-/data/aiops.db}
     volumes:
       - ../aiops-api:/app

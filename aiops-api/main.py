@@ -1815,3 +1815,280 @@ Donne en français :
 
     except Exception as e:
         return {"erreur": str(e)}
+
+
+# ════════════════════════════════════════════════
+# FIREWALL — Gestion du pare-feu nftables
+# ════════════════════════════════════════════════
+
+NFT = shutil.which("nft")
+
+
+def _nft_cmd(args: list) -> tuple[str, str, int]:
+    try:
+        r = subprocess.run(
+            [NFT] + args, capture_output=True, text=True, timeout=10
+        )
+        return r.stdout, r.stderr, r.returncode
+    except Exception as e:
+        return "", str(e), -1
+
+
+def _nft_json() -> dict:
+    stdout, _, rc = _nft_cmd(["-j", "list", "ruleset"])
+    if rc != 0:
+        return {}
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _parse_rules(table_family: str = "inet", table_name: str = "aiops_filter") -> list:
+    data = _nft_json()
+    rules = []
+    for table in data.get("nftables", []):
+        if "chain" not in table:
+            continue
+        chain = table["chain"]
+        if chain.get("family") != table_family:
+            continue
+        if chain.get("table") != table_name:
+            continue
+        for rule in chain.get("rules", []):
+            rules.append({
+                "handle": rule.get("handle"),
+                "chain": chain.get("name"),
+                "family": table_family,
+                "table": table_name,
+                "expr": rule.get("expr", []),
+                "rule": _simplify_rule(rule.get("expr", [])),
+            })
+    return rules
+
+
+def _simplify_rule(expr: list) -> str:
+    parts = []
+    for e in expr:
+        if "match" in e:
+            left = e["match"].get("left", {})
+            right = e["match"].get("right", "")
+            if isinstance(left, dict):
+                field = left.get("field", [{}])
+                if isinstance(field, list) and field:
+                    field = field[0]
+                field_name = field if isinstance(field, str) else str(field)
+                parts.append(f"{field_name} {right}")
+            else:
+                parts.append(str(right))
+        elif "accept" in e:
+            parts.append("accept")
+        elif "drop" in e:
+            parts.append("drop")
+        elif "counter" in e:
+            pkts = e["counter"].get("packets", 0)
+            bytes_ = e["counter"].get("bytes", 0)
+            parts.append(f"counter({pkts} pkts, {bytes_} bytes)")
+        elif "limit" in e:
+            parts.append(f"limit {e['limit'].get('rate')}/s")
+        elif "log" in e:
+            parts.append("log")
+        elif "masquerade" in e:
+            parts.append("masquerade")
+        elif "queue" in e:
+            parts.append("queue")
+        elif "notrack" in e:
+            parts.append("notrack")
+        elif "dup" in e:
+            parts.append(f"dup to {e['dup'].get('to')}")
+        elif "vmap" in e:
+            parts.append(f"vmap {e['vmap'].get('key')}")
+    return " ".join(parts)
+
+
+def _read_proc_net_dev() -> list:
+    try:
+        with open("/proc/net/dev", "r") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return []
+    interfaces = []
+    for line in lines[2:]:
+        parts = line.split()
+        if not parts:
+            continue
+        name = parts[0].rstrip(":")
+        rx_bytes = int(parts[1])
+        rx_packets = int(parts[2])
+        rx_errors = int(parts[3])
+        rx_drop = int(parts[4])
+        tx_bytes = int(parts[9])
+        tx_packets = int(parts[10])
+        tx_errors = int(parts[11])
+        tx_drop = int(parts[12])
+        interfaces.append({
+            "name": name,
+            "rx_bytes": rx_bytes,
+            "rx_packets": rx_packets,
+            "rx_errors": rx_errors,
+            "rx_drop": rx_drop,
+            "tx_bytes": tx_bytes,
+            "tx_packets": tx_packets,
+            "tx_errors": tx_errors,
+            "tx_drop": tx_drop,
+        })
+    return interfaces
+
+
+@app.get("/firewall/status", tags=["Firewall"])
+async def firewall_status():
+    """Statut general du pare-feu nftables."""
+    nft_available = NFT is not None
+    tables = []
+    data = _nft_json()
+    for item in data.get("nftables", []):
+        if "table" in item:
+            t = item["table"]
+            tables.append({
+                "family": t.get("family"),
+                "name": t.get("name"),
+            })
+    interfaces = _read_proc_net_dev()
+    ip_forward = _check_ip_forward()
+    return {
+        "nft_available": nft_available,
+        "tables": tables,
+        "interfaces": interfaces,
+        "ip_forward": ip_forward,
+        "timestamp": now_utc().isoformat(),
+    }
+
+
+def _check_ip_forward() -> bool:
+    try:
+        with open("/proc/sys/net/ipv4/ip_forward", "r") as f:
+            return f.read().strip() == "1"
+    except FileNotFoundError:
+        return False
+
+
+@app.get("/firewall/rules", tags=["Firewall"])
+async def firewall_rules(
+    family: str = "inet",
+    table: str = "aiops_filter"
+):
+    """Liste les regles d'une table nftables."""
+    rules = _parse_rules(family, table)
+    return {
+        "family": family,
+        "table": table,
+        "total": len(rules),
+        "rules": rules,
+        "timestamp": now_utc().isoformat(),
+    }
+
+
+class FirewallRuleAdd(BaseModel):
+    chain: str = "input"
+    family: str = "inet"
+    table: str = "aiops_filter"
+    rule: str = ""
+
+
+@app.post("/firewall/rules", tags=["Firewall"])
+async def firewall_add_rule(requete: FirewallRuleAdd):
+    """Ajoute une regle a une chaine nftables."""
+    if not NFT:
+        return {"erreur": "nft non disponible"}
+    rule_parts = ["add", "rule", requete.family, requete.table, requete.chain]
+    rule_parts.extend(requete.rule.split())
+    stdout, stderr, rc = _nft_cmd(rule_parts)
+    if rc != 0:
+        return {"erreur": stderr.strip(), "commande": " ".join(rule_parts)}
+    return {
+        "statut": "ok",
+        "commande": " ".join(rule_parts),
+        "sortie": stdout.strip(),
+    }
+
+
+@app.delete("/firewall/rules/{handle}", tags=["Firewall"])
+async def firewall_delete_rule(
+    handle: int,
+    family: str = "inet",
+    table: str = "aiops_filter",
+    chain: str = "input",
+):
+    """Supprime une regle par son handle."""
+    if not NFT:
+        return {"erreur": "nft non disponible"}
+    stdout, stderr, rc = _nft_cmd([
+        "delete", "rule", family, table, chain, "handle", str(handle)
+    ])
+    if rc != 0:
+        return {"erreur": stderr.strip()}
+    return {"statut": "ok", "handle_supprime": handle}
+
+
+@app.post("/firewall/block/{ip}", tags=["Firewall"])
+async def firewall_block_ip(ip: str):
+    """Bloque une IP source dans la table aiops_filter."""
+    if not NFT:
+        return {"erreur": "nft non disponible"}
+    _, stderr, rc = _nft_cmd([
+        "add", "rule", "inet", "aiops_filter", "input",
+        "ip", "saddr", ip, "counter", "drop"
+    ])
+    if rc != 0:
+        return {"erreur": stderr.strip()}
+    return {
+        "statut": "ok",
+        "ip": ip,
+        "action": "blocked",
+        "message": f"IP {ip} bloquee dans aiops_filter/input",
+    }
+
+
+@app.post("/firewall/unblock/{ip}", tags=["Firewall"])
+async def firewall_unblock_ip(ip: str):
+    """Supprime toutes les regles bloquant une IP."""
+    if not NFT:
+        return {"erreur": "nft non disponible"}
+    rules = _parse_rules("inet", "aiops_filter")
+    removed = 0
+    for rule in rules:
+        if ip in rule.get("rule", ""):
+            _, _, rc = _nft_cmd([
+                "delete", "rule", "inet", "aiops_filter",
+                rule["chain"], "handle", str(rule["handle"])
+            ])
+            if rc == 0:
+                removed += 1
+    return {
+        "statut": "ok",
+        "ip": ip,
+        "regles_supprimees": removed,
+        "message": f"{removed} regle(s) supprimee(s) pour {ip}",
+    }
+
+
+@app.get("/firewall/traffic", tags=["Firewall"])
+async def firewall_traffic():
+    """Statistiques trafic reseau par interface."""
+    interfaces = _read_proc_net_dev()
+    return {
+        "timestamp": now_utc().isoformat(),
+        "interfaces": interfaces,
+        "total": len(interfaces),
+    }
+
+
+@app.post("/firewall/flush", tags=["Firewall"])
+async def firewall_flush(family: str = "inet", table: str = "aiops_filter"):
+    """Vide toutes les regles d'une table (sauf policies par defaut)."""
+    if not NFT:
+        return {"erreur": "nft non disponible"}
+    stdout, stderr, rc = _nft_cmd(["flush", "chain", family, table, "input"])
+    if rc != 0:
+        return {"erreur": stderr.strip()}
+    return {"statut": "ok", "action": f"flush {family}/{table}/input"}

@@ -39,6 +39,8 @@ ENV TZ=Africa/Tunis
 # Nécessaires pour compiler Prophet et NumPy
 RUN apt-get update && apt-get install -y \
     build-essential \
+    nftables \
+    ethtool \
     wget \
     curl \
     && rm -rf /var/lib/apt/lists/*

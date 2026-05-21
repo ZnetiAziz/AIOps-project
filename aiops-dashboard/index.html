@@ -905,6 +905,9 @@
     <div class="nav-item" onclick="showSection('alerts', this)">
       <span class="icon">◉</span> Alertes
     </div>
+    <div class="nav-item" onclick="showSection('firewall', this)">
+      <span class="icon">🔒</span> Pare-feu
+    </div>
   </div>
   <div class="nav-section">
     <div class="nav-label">Intelligence</div>
@@ -1295,7 +1298,94 @@
       </div>
     </div>
   </div>
- 
+
+  <!-- ══ SECTION : FIREWALL ══ -->
+  <div class="section" id="section-firewall">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Pare-feu <span>nftables</span></div>
+        <div class="page-subtitle">Gestion des règles de filtrage et statistiques de trafic</div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost" onclick="loadFirewallStatus()">↺ Actualiser</button>
+      </div>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card teal">
+        <div class="stat-label">nftables</div>
+        <div class="stat-value" id="fw-nft-status">--</div>
+        <div class="stat-sub" id="fw-nft-tables">Tables: --</div>
+      </div>
+      <div class="stat-card green">
+        <div class="stat-label">Règles</div>
+        <div class="stat-value" id="fw-rule-count">--</div>
+        <div class="stat-sub">Table aiops_filter</div>
+      </div>
+      <div class="stat-card orange">
+        <div class="stat-label">IP Forward</div>
+        <div class="stat-value" id="fw-ip-forward">--</div>
+        <div class="stat-sub">Routage IPv4</div>
+      </div>
+      <div class="stat-card red">
+        <div class="stat-label">Interfaces</div>
+        <div class="stat-value" id="fw-interface-count">--</div>
+        <div class="stat-sub">Réseau actives</div>
+      </div>
+    </div>
+
+    <div class="content-grid" style="grid-template-columns:1fr 400px">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Règles de filtrage</div>
+          <span class="tag teal" id="fw-rule-badge">0 règles</span>
+        </div>
+        <div class="panel-body" id="fw-rules-table">
+          <div class="loading"><div class="spinner"></div> Chargement...</div>
+        </div>
+      </div>
+      <div>
+        <div class="panel" style="margin-bottom:16px">
+          <div class="panel-header">
+            <div class="panel-title">Bloquer IP</div>
+          </div>
+          <div class="panel-body">
+            <div style="display:flex;gap:8px">
+              <input type="text" id="fw-block-ip" placeholder="ex: 10.0.0.99" style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text);font-family:var(--font-mono);font-size:12px">
+              <button class="btn btn-primary" onclick="blockIP()">Bloquer</button>
+            </div>
+            <div id="fw-block-result" style="font-size:11px;margin-top:8px;color:var(--text3)"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">Ajouter règle</div>
+          </div>
+          <div class="panel-body">
+            <select id="fw-add-chain" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text);font-family:var(--font-mono);font-size:12px;margin-bottom:8px">
+              <option value="input">input</option>
+              <option value="output">output</option>
+              <option value="forward">forward</option>
+            </select>
+            <input type="text" id="fw-add-rule" placeholder="ex: ip saddr 10.0.0.0/24 counter accept" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text);font-family:var(--font-mono);font-size:12px;margin-bottom:8px">
+            <button class="btn btn-primary" style="width:100%" onclick="addFirewallRule()">➕ Ajouter</button>
+            <div id="fw-add-result" style="font-size:11px;margin-top:8px;color:var(--text3)"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <div class="panel-header">
+        <div class="panel-title">Trafic réseau par interface</div>
+        <span class="tag teal">/proc/net/dev</span>
+      </div>
+      <div class="panel-body" id="fw-traffic-table">
+        <div class="loading"><div class="spinner"></div> Chargement...</div>
+      </div>
+    </div>
+  </div>
+
 </div><!-- end main -->
  
 <script>
@@ -1401,6 +1491,7 @@ function showSection(name, navEl) {
   if (name === 'alerts') loadAlerts();
   if (name === 'performance') loadPerformance();
   if (name === 'vms') renderVMs();
+  if (name === 'firewall') { loadFirewallStatus(); loadFirewallRules(); }
 }
  
 // ── API HELPER ──
@@ -1897,6 +1988,96 @@ async function loadPerformance() {
     </div>`;
 }
  
+// ── FIREWALL ──
+async function loadFirewallStatus() {
+  const data = await apiCall('/firewall/status');
+  if (!data) {
+    document.getElementById('fw-nft-status').textContent = 'API ERR';
+    return;
+  }
+  document.getElementById('fw-nft-status').textContent = data.nft_available ? '✅ Actif' : '❌ Indisponible';
+  document.getElementById('fw-nft-tables').textContent = 'Tables: ' + (data.tables?.length || 0);
+  document.getElementById('fw-ip-forward').textContent = data.ip_forward ? '✅ Activé' : '❌ Désactivé';
+  document.getElementById('fw-interface-count').textContent = data.interfaces?.length || 0;
+}
+
+async function loadFirewallRules() {
+  const data = await apiCall('/firewall/rules?table=aiops_filter');
+  const el = document.getElementById('fw-rules-table');
+  document.getElementById('fw-rule-count').textContent = data?.total || 0;
+  document.getElementById('fw-rule-badge').textContent = (data?.total || 0) + ' règles';
+  if (!data || !data.rules?.length) {
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Aucune règle dans aiops_filter</div>';
+    return;
+  }
+  let html = '<table class="metrics-table"><thead><tr><th>Handle</th><th>Chaîne</th><th>Règle</th><th>Action</th></tr></thead><tbody>';
+  for (const r of data.rules) {
+    const ruleText = escapeHTML(r.rule || '--');
+    html += `<tr>
+      <td style="color:var(--text3)">${r.handle}</td>
+      <td>${escapeHTML(r.chain)}</td>
+      <td style="font-size:11px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ruleText}</td>
+      <td><button class="btn btn-ghost" style="padding:4px 8px;font-size:10px;color:var(--red)" onclick="deleteFirewallRule(${r.handle})">✕</button></td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
+
+  // Load traffic
+  const traffic = await apiCall('/firewall/traffic');
+  const trafEl = document.getElementById('fw-traffic-table');
+  if (!traffic || !traffic.interfaces?.length) {
+    trafEl.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Aucune interface</div>';
+    return;
+  }
+  let thtml = '<table class="metrics-table"><thead><tr><th>Interface</th><th>RX octets</th><th>RX paquets</th><th>RX erreurs</th><th>TX octets</th><th>TX paquets</th><th>TX erreurs</th></tr></thead><tbody>';
+  for (const iface of traffic.interfaces) {
+    thtml += `<tr>
+      <td><b>${escapeHTML(iface.name)}</b></td>
+      <td>${(iface.rx_bytes / 1024 / 1024).toFixed(1)} MB</td>
+      <td>${iface.rx_packets}</td>
+      <td style="color:${iface.rx_errors > 0 ? 'var(--red)' : 'var(--green)'}">${iface.rx_errors}</td>
+      <td>${(iface.tx_bytes / 1024 / 1024).toFixed(1)} MB</td>
+      <td>${iface.tx_packets}</td>
+      <td style="color:${iface.tx_errors > 0 ? 'var(--red)' : 'var(--green)'}">${iface.tx_errors}</td>
+    </tr>`;
+  }
+  thtml += '</tbody></table>';
+  trafEl.innerHTML = thtml;
+}
+
+async function deleteFirewallRule(handle) {
+  if (!confirm(`Supprimer la règle handle ${handle} ?`)) return;
+  const result = await apiCall(`/firewall/rules/${handle}`);
+  document.getElementById('fw-block-result').textContent = result?.statut === 'ok'
+    ? `✅ Règle ${handle} supprimée`
+    : `❌ ${result?.erreur || 'Erreur'}`;
+  loadFirewallRules();
+}
+
+async function blockIP() {
+  const ip = document.getElementById('fw-block-ip').value.trim();
+  if (!ip) return;
+  const result = await apiPost('/firewall/block/' + encodeURIComponent(ip), {});
+  document.getElementById('fw-block-result').textContent = result?.statut === 'ok'
+    ? `✅ IP ${ip} bloquée`
+    : `❌ ${result?.erreur || 'Erreur'}`;
+  document.getElementById('fw-block-ip').value = '';
+  loadFirewallRules();
+}
+
+async function addFirewallRule() {
+  const chain = document.getElementById('fw-add-chain').value;
+  const rule = document.getElementById('fw-add-rule').value.trim();
+  if (!rule) return;
+  const result = await apiPost('/firewall/rules', { chain, rule });
+  document.getElementById('fw-add-result').textContent = result?.statut === 'ok'
+    ? '✅ Règle ajoutée'
+    : `❌ ${result?.erreur || 'Erreur'}`;
+  document.getElementById('fw-add-rule').value = '';
+  loadFirewallRules();
+}
+
 // ── REFRESH ALL ──
 function refreshAll() { loadDashboard(); }
  
