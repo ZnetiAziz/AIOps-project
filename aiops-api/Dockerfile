@@ -41,9 +41,6 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     wget \
     curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get purge -y build-essential \
-    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Étape 6 : Mettre à jour pip ───────────────
@@ -65,6 +62,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # On copie le code APRÈS les dépendances
 # pour profiter du cache Docker
 COPY . .
+
+# Nettoyer les dépendances de compilation pour réduire la taille finale
+RUN apt-get purge -y build-essential \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
 # ── Étape 9 : Port exposé ─────────────────────
 # L'API écoute sur le port 8000
